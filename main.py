@@ -1,52 +1,113 @@
+import os
+import pickle
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS
-from langchain_core.vectorstores import InMemoryVectorStore
-from langchain_ollama import OllamaEmbeddings
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_ollama.llms import OllamaLLM
+from sentence_transformers import SentenceTransformer
+from langchain.embeddings import HuggingFaceEmbeddings
+from openai import OpenAI
+from db import db
+from models import Chat
+from datetime import datetime
 
-pdfs_directory = 'pdfs/'
+def save_chat(username, question, answer):
+    chat = Chat(username=username, question=question, answer=answer, timestamp=datetime.now())
+    db.chats.insert_one(chat.dict())
+
+def get_chat_history(username):
+    return list(db.chats.find({"username": username}))
+
+# Set GROQ API key
+os.environ["GROQ_API_KEY"] = "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"
+
+# Constants
+pdfs_directory = "pdfs/"
+index_directory = "vector_store/"
+os.makedirs(pdfs_directory, exist_ok=True)
+os.makedirs(index_directory, exist_ok=True)
 
 
-embeddings = OllamaEmbeddings(model="deepseek-r1:1.5b")
+# Embeddings - very fast
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+embeddings = HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2')
 
-model = OllamaLLM(model="deepseek-r1:1.5b")
+# Groq Client
+client = OpenAI(
+    base_url="https://api.groq.com/openai/v1",
+    api_key=os.environ["GROQ_API_KEY"]
+)
 
+# Prompt template
 template = """
-You are an assistant that answers questions. Using the following retrieved information, answer the user question. If you don't know the answer, say that you don't know. Use up to three sentences, keeping the answer concise.
-Question: {question} 
-Context: {context} 
-Answer:
+you are a helpful assistant. answer the user's question strictly using only the information provided in the context below. do not use any outside knowledge. if the answer is not found in the context, say "i could not find that information in the document."
+
+question: {question}  
+context: {context}  
+answer:
 """
 
+# Upload PDF
 def upload_pdf(file):
     with open(pdfs_directory + file.name, "wb") as f:
         f.write(file.getbuffer())
 
-def create_vector_store(file_path):
+# Cache FAISS vectorstore per file
+def create_or_load_vector_store(file_path):
+    index_path = os.path.join(index_directory, os.path.basename(file_path) + ".pkl")
+    if os.path.exists(index_path):
+        with open(index_path, "rb") as f:
+            return pickle.load(f)
+
     loader = PyPDFLoader(file_path)
     documents = loader.load()
-    
-    text_splitter =RecursiveCharacterTextSplitter(
+
+    text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=2000,
         chunk_overlap=300,
         add_start_index=True
     )
+    chunks = text_splitter.split_documents(documents)
 
-    chunked_docs = text_splitter.split_documents(documents)
-    db = FAISS.from_documents(chunked_docs, embeddings)
+    db = FAISS.from_documents(chunks, embeddings)
+
+    with open(index_path, "wb") as f:
+        pickle.dump(db, f)
+
     return db
 
-
+# Retrieve documents
 def retrieve_docs(db, query, k=4):
-    print(db.similarity_search(query))
     return db.similarity_search(query, k)
 
 
-def question_pdf(question, documents):
-    context = "\n\n".join([doc.page_content for doc in documents])
-    prompt = ChatPromptTemplate.from_template(template)
-    chain = prompt | model
+conversation_history = []
 
-    return chain.invoke({"question": question, "context": context})
+# Query model with conversation history
+def question_pdf(question, documents):
+    global conversation_history
+
+    # Get the context from documents
+    context = "\n\n".join([doc.page_content for doc in documents])
+
+    # Add the user's question to the conversation history
+    conversation_history.append(f"User: {question}")
+    conversation_history.append(f"Context: {context}")
+
+    # Construct the prompt with all previous messages
+    prompt = "\n".join(conversation_history) + f"\nAnswer:"
+
+    # Make the API call with the full context
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",  # Use appropriate model
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+        max_tokens=512
+    )
+
+    # Get the model's answer
+    answer = response.choices[0].message.content
+
+    # Append the model's response to the conversation history
+    conversation_history.append(f"Assistant: {answer}")
+
+    return answer
