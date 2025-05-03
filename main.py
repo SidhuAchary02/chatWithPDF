@@ -3,7 +3,6 @@ import pickle
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS
-from sentence_transformers import SentenceTransformer
 from langchain.embeddings import HuggingFaceEmbeddings
 from openai import OpenAI
 from db import db
@@ -28,7 +27,6 @@ os.makedirs(index_directory, exist_ok=True)
 
 
 # Embeddings - very fast
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 embeddings = HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2')
 
 # Groq Client
@@ -94,7 +92,10 @@ def question_pdf(question, documents):
     conversation_history.append(f"Context: {context}")
 
     # Construct the prompt with all previous messages
-    prompt = "\n".join(conversation_history) + f"\nAnswer:"
+    # prompt = "\n".join(conversation_history) + f"\nAnswer:"
+
+    prompt = template.format(question=question, context=context)
+
 
     # Make the API call with the full context
     response = client.chat.completions.create(
