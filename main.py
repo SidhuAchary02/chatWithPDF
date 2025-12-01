@@ -17,7 +17,8 @@ def get_chat_history(username):
     return list(db.chats.find({"username": username}))
 
 # Set GROQ API key
-os.environ["GROQ_API_KEY"] = "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"
+os.environ["GROQ_API_KEY"] = "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"
+# os.environ["GROQ_API_KEY"] = "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"
 
 # Constants
 pdfs_directory = "pdfs/"
